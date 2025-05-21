@@ -20,6 +20,9 @@ RewriteRule ^admin/pages/edit/([0-9]+)$ admin/pages/edit.php?id=$1 [L]
 RewriteRule ^admin/whatnot$ admin/whatnot/settings.php [L]
 RewriteRule ^admin/analytics$ admin/analytics/dashboard.php [L]
 RewriteRule ^admin/settings$ admin/settings/general.php [L]
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^([a-zA-Z0-9-]+)/?$ page.php?slug=$1 [L,QSA]
 
 # Blog post rewrites
 RewriteRule ^blog$ blog.php [L]

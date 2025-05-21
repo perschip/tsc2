@@ -16,9 +16,21 @@
                 <p class="sidebar-heading mt-2 mb-1">Content</p>
             </li>
             <li>
-                <a href="/admin/blog/list.php" class="nav-link <?php echo strpos($_SERVER['REQUEST_URI'], '/admin/blog/') !== false ? 'active' : ''; ?>">
+                <a href="/admin/blog/list.php" class="nav-link <?php echo (strpos($_SERVER['REQUEST_URI'], '/admin/blog/') !== false && strpos($_SERVER['REQUEST_URI'], '/admin/blog/settings.php') === false) ? 'active' : ''; ?>">
                     <i class="fas fa-blog me-2"></i>
                     Blog Posts
+                </a>
+            </li>
+            <li>
+                <a href="/admin/blog/settings.php" class="nav-link <?php echo strpos($_SERVER['REQUEST_URI'], '/admin/blog/settings.php') !== false ? 'active' : ''; ?>">
+                    <i class="fas fa-cog me-2"></i>
+                    Blog Settings
+                </a>
+            </li>
+            <li>
+                <a href="/admin/pages/list.php" class="nav-link <?php echo strpos($_SERVER['REQUEST_URI'], '/admin/pages/') !== false ? 'active' : ''; ?>">
+                    <i class="fas fa-file-alt me-2"></i>
+                    Pages
                 </a>
             </li>
             <li>

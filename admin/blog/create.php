@@ -18,15 +18,16 @@ $excerpt = '';
 $meta_description = '';
 $status = 'published';
 $featured_image = '';
+$post_categories = [];
 
 // Process form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Get form data
     $title = trim($_POST['title']);
     $content = $_POST['content'];
-    $excerpt = trim($_POST['excerpt']);
-    $meta_description = trim($_POST['meta_description']);
-    $status = $_POST['status'];
+    $excerpt = trim($_POST['excerpt'] ?? '');
+    $meta_description = trim($_POST['meta_description'] ?? '');
+    $status = $_POST['status'] ?? 'published';
     $featured_image = '';
     
     // Validate inputs
@@ -87,13 +88,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $slug = $slug . '-' . date('mdY');
     }
     
-    // If no errors, create the post
+    // If no errors, create the post using simpler approach
     if (empty($errors)) {
         try {
-            // Start transaction
+            // Use transaction for database consistency
             $pdo->beginTransaction();
             
-            // Insert into blog_posts table
+            // Insert the post with basic information
             $query = "INSERT INTO blog_posts (title, slug, content, excerpt, meta_description, featured_image, status, created_at, updated_at) 
                       VALUES (:title, :slug, :content, :excerpt, :meta_description, :featured_image, :status, NOW(), NOW())";
             
@@ -162,7 +163,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // Commit transaction
             $pdo->commit();
             
-            // Redirect to the blog post list with success message
+            // Set success message and redirect
             $_SESSION['success_message'] = 'Blog post created successfully!';
             header('Location: list.php');
             exit;
@@ -171,6 +172,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // Rollback transaction on error
             $pdo->rollBack();
             $errors[] = 'Database error: ' . $e->getMessage();
+            error_log('Create post error: ' . $e->getMessage());
         }
     }
 }
@@ -183,6 +185,7 @@ try {
     $categories = $categories_stmt->fetchAll();
 } catch (PDOException $e) {
     $categories = [];
+    error_log('Error fetching categories: ' . $e->getMessage());
 }
 
 // Page variables
@@ -212,7 +215,7 @@ include_once '../includes/header.php';
 
 <div class="card shadow mb-4">
     <div class="card-body">
-        <form action="create.php" method="post" enctype="multipart/form-data">
+        <form action="create.php" method="post" enctype="multipart/form-data" id="blogPostForm">
             <div class="row">
                 <div class="col-md-8">
                     <!-- Main Content Fields -->
@@ -223,7 +226,7 @@ include_once '../includes/header.php';
                     
                     <div class="mb-3">
                         <label for="content" class="form-label">Content *</label>
-                        <textarea class="form-control editor" id="content" name="content" rows="15" required><?php echo htmlspecialchars($content); ?></textarea>
+                        <textarea class="form-control" id="content" name="content" rows="15" required><?php echo htmlspecialchars($content); ?></textarea>
                     </div>
                     
                     <div class="mb-3">
@@ -283,14 +286,24 @@ include_once '../includes/header.php';
                                         </div>
                                     <?php endforeach; ?>
                                 </div>
-                                <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#categoryModal">
-                                    <i class="fas fa-plus-circle me-1"></i> Add New Category
-                                </button>
+                                <div class="d-flex">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary me-2" data-bs-toggle="modal" data-bs-target="#categoryModal">
+                                        <i class="fas fa-plus-circle me-1"></i> Add New Category
+                                    </button>
+                                    <a href="settings.php?tab=categories" class="btn btn-sm btn-outline-primary">
+                                        <i class="fas fa-cog me-1"></i> Manage Categories
+                                    </a>
+                                </div>
                             <?php else: ?>
                                 <p>No categories found.</p>
-                                <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#categoryModal">
-                                    <i class="fas fa-plus-circle me-1"></i> Create Category
-                                </button>
+                                <div class="d-flex">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary me-2" data-bs-toggle="modal" data-bs-target="#categoryModal">
+                                        <i class="fas fa-plus-circle me-1"></i> Create Category
+                                    </button>
+                                    <a href="settings.php?tab=categories" class="btn btn-sm btn-outline-primary">
+                                        <i class="fas fa-cog me-1"></i> Manage Categories
+                                    </a>
+                                </div>
                             <?php endif; ?>
                         </div>
                     </div>
@@ -352,64 +365,95 @@ include_once '../includes/footer.php';
 ?>
 
 <script>
-jQuery(document).ready(function($) {
-    // Image preview
-    $('#featured_image').on('change', function(event) {
-        var preview = document.getElementById('imagePreview');
-        var previewContainer = document.getElementById('imagePreviewContainer');
-        var file = event.target.files[0];
+// Image preview
+document.getElementById('featured_image').addEventListener('change', function(event) {
+    var preview = document.getElementById('imagePreview');
+    var previewContainer = document.getElementById('imagePreviewContainer');
+    var file = event.target.files[0];
+    
+    if (file) {
+        var reader = new FileReader();
         
-        if (file) {
-            var reader = new FileReader();
-            
-            reader.onload = function(e) {
-                preview.src = e.target.result;
-                previewContainer.classList.remove('d-none');
-            };
-            
-            reader.readAsDataURL(file);
-        } else {
-            previewContainer.classList.add('d-none');
-        }
-    });
+        reader.onload = function(e) {
+            preview.src = e.target.result;
+            previewContainer.classList.remove('d-none');
+        };
+        
+        reader.readAsDataURL(file);
+    } else {
+        previewContainer.classList.add('d-none');
+    }
+});
 
-    // Save Category
-    $('#saveCategory').on('click', function() {
-        var categoryName = $('#category_name').val().trim();
+// Save Category
+document.addEventListener('DOMContentLoaded', function() {
+    // Initialize modal from Bootstrap properly
+    var categoryModal = new bootstrap.Modal(document.getElementById('categoryModal'));
+    
+    document.getElementById('saveCategory').addEventListener('click', function() {
+        var categoryName = document.getElementById('category_name').value.trim();
         
         if (categoryName) {
             // Send AJAX request to save category
-            $.ajax({
-                type: 'POST',
-                url: 'ajax_add_category.php',
-                data: { name: categoryName },
-                dataType: 'json',
-                success: function(response) {
-                    if (response.success) {
-                        // Add the new category to the list
-                        var categoriesContainer = $('.card-body .mb-3').first();
-                        var newCategory = $('<div class="form-check"></div>');
-                        newCategory.html(
-                            '<input class="form-check-input" type="checkbox" name="categories[]" value="' + response.id + '" id="category-' + response.id + '" checked>' +
-                            '<label class="form-check-label" for="category-' + response.id + '">' +
-                            categoryName +
-                            '</label>'
-                        );
-                        categoriesContainer.append(newCategory);
-                        
-                        // Close modal and clear input
-                        $('#category_name').val('');
-                        $('#categoryModal').modal('hide');
-                    } else {
-                        alert(response.message || 'Failed to add category');
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', 'ajax_add_category.php', true);
+            xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+            xhr.onload = function() {
+                if (xhr.status === 200) {
+                    try {
+                        var response = JSON.parse(xhr.responseText);
+                        if (response.success) {
+                            // Add the new category to the list
+                            var categoriesContainer = document.querySelector('.card-body .mb-3');
+                            var newCategory = document.createElement('div');
+                            newCategory.className = 'form-check';
+                            newCategory.innerHTML =
+                                '<input class="form-check-input" type="checkbox" name="categories[]" value="' + response.id + '" id="category-' + response.id + '" checked>' +
+                                '<label class="form-check-label" for="category-' + response.id + '">' +
+                                categoryName +
+                                '</label>';
+                            categoriesContainer.appendChild(newCategory);
+                            
+                            // Close modal and clear input
+                            document.getElementById('category_name').value = '';
+                            
+                            // Hide the modal
+                            categoryModal.hide();
+                            
+                            // Show success message
+                            alert('Category "' + categoryName + '" added successfully!');
+                        } else {
+                            alert(response.message || 'Failed to add category');
+                        }
+                    } catch (e) {
+                        console.error('JSON parsing error:', e);
+                        console.log('Raw response:', xhr.responseText);
+                        alert('Error processing server response');
                     }
-                },
-                error: function() {
+                } else {
                     alert('Error processing request');
                 }
-            });
+            };
+            xhr.onerror = function() {
+                console.error('Network error occurred');
+                alert('Network error. Please check your connection.');
+            };
+            xhr.send('name=' + encodeURIComponent(categoryName));
         } else {
             alert('Please enter a category name');
+        }
+    });
+});
+
+// Make sure form is submitted even if TinyMCE fails to load
+document.addEventListener('DOMContentLoaded', function() {
+    // Just to make sure we have a simple backup submit handler
+    document.getElementById('blogPostForm').addEventListener('submit', function(e) {
+        // Check if content is empty
+        var contentField = document.getElementById('content');
+        if (!contentField.value.trim()) {
+            e.preventDefault();
+            alert('Content is required');
         }
     });
 });
