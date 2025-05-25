@@ -4,8 +4,47 @@ $site_name = getSetting('site_name', 'Tristate Cards');
 $site_description = getSetting('site_description', 'Your trusted source for sports cards, collectibles, and memorabilia');
 $meta_keywords = getSetting('meta_keywords', 'sports cards, trading cards, collectibles, memorabilia, card breaks, eBay listings, Whatnot');
 
-// Check if this is a blog page for navigation highlighting
+// Get current page for highlighting active link
+$current_page = basename($_SERVER['PHP_SELF']);
+// Special case for blog pages
 $is_blog_page = strpos($_SERVER['PHP_SELF'], 'blog') !== false;
+
+// Get navigation items from database
+function getNavigation($pdo) {
+    try {
+        // Check if the navigation table exists
+        $tableCheck = $pdo->query("SHOW TABLES LIKE 'navigation'");
+        if ($tableCheck->rowCount() == 0) {
+            // Table doesn't exist, return default navigation
+            return [
+                ['title' => 'Home', 'url' => 'index.php', 'target' => null, 'icon' => null],
+                ['title' => 'Blog', 'url' => 'blog.php', 'target' => null, 'icon' => null],
+                ['title' => 'About', 'url' => 'about.php', 'target' => null, 'icon' => null],
+                ['title' => 'Contact', 'url' => 'contact.php', 'target' => null, 'icon' => null],
+            ];
+        }
+        
+        // Get navigation items ordered by display_order
+        $query = "SELECT * FROM navigation WHERE is_active = 1 ORDER BY display_order ASC";
+        $stmt = $pdo->prepare($query);
+        $stmt->execute();
+        return $stmt->fetchAll();
+    } catch (PDOException $e) {
+        // If there's an error, return default navigation
+        return [
+            ['title' => 'Home', 'url' => 'index.php', 'target' => null, 'icon' => null],
+            ['title' => 'Blog', 'url' => 'blog.php', 'target' => null, 'icon' => null],
+            ['title' => 'About', 'url' => 'about.php', 'target' => null, 'icon' => null],
+            ['title' => 'Contact', 'url' => 'contact.php', 'target' => null, 'icon' => null],
+        ];
+    }
+}
+
+// Get navigation items
+$nav_items = getNavigation($pdo);
+
+// Special handling for Whatnot link
+$whatnot_username = getSetting('whatnot_username');
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -55,6 +94,7 @@ $is_blog_page = strpos($_SERVER['PHP_SELF'], 'blog') !== false;
     <!-- CSS -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
     
     <!-- Custom CSS -->
     <link href="/assets/css/main.css" rel="stylesheet">
@@ -79,19 +119,65 @@ $is_blog_page = strpos($_SERVER['PHP_SELF'], 'blog') !== false;
     <!-- Extra head content -->
     <?php echo $extra_head; ?>
     <?php endif; ?>
+    
 </head>
 <body>
-    <!-- Navigation -->
-    <nav class="navbar navbar-expand-lg navbar-dark sticky-top">
-        <div class="container">
-            <a class="navbar-brand" href="index.php">
-                <?php echo htmlspecialchars($site_name); ?>
-            </a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav ms-auto">
+ <!-- Navigation -->
+<nav class="navbar navbar-expand-lg navbar-dark sticky-top">
+    <div class="container">
+        <a class="navbar-brand" href="index.php">
+            <?php echo htmlspecialchars($site_name); ?>
+        </a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav ms-auto">
+                <?php
+                // Get navigation items from database (header or both)
+                try {
+                    $nav_query = "SELECT * FROM navigation WHERE (location = 'header' OR location = 'both') AND is_active = 1 ORDER BY display_order ASC";
+                    $nav_stmt = $pdo->prepare($nav_query);
+                    $nav_stmt->execute();
+                    $nav_items = $nav_stmt->fetchAll();
+                    
+                    // Current page for highlighting active link
+                    $current_page = basename($_SERVER['PHP_SELF']);
+                    // Special case for blog pages
+                    $is_blog_page = strpos($_SERVER['PHP_SELF'], 'blog') !== false;
+                    
+                    // Display navigation items
+                    foreach ($nav_items as $item) {
+                        // Determine if this link is active
+                        $is_active = false;
+                        if ($current_page === basename($item['url'])) {
+                            $is_active = true;
+                        } else if ($is_blog_page && basename($item['url']) === 'blog.php') {
+                            $is_active = true;
+                        }
+                        
+                        // Create target attribute if needed
+                        $target_attr = !empty($item['target']) ? ' target="' . htmlspecialchars($item['target']) . '"' : '';
+                        
+                        // Create icon if needed
+                        $icon_html = !empty($item['icon']) ? '<i class="' . htmlspecialchars($item['icon']) . ' me-1"></i> ' : '';
+                        
+                        // Special case for Whatnot link - use the username from settings
+                        $href = $item['url'];
+                        if (strpos($href, 'whatnot.com/user/') !== false && $whatnot_username) {
+                            $href = 'https://www.whatnot.com/user/' . $whatnot_username;
+                        }
+                        ?>
+                        <li class="nav-item">
+                            <a class="nav-link <?php echo $is_active ? 'active' : ''; ?>" href="<?php echo htmlspecialchars($href); ?>"<?php echo $target_attr; ?>>
+                                <?php echo $icon_html . htmlspecialchars($item['title']); ?>
+                            </a>
+                        </li>
+                        <?php
+                    }
+                } catch (PDOException $e) {
+                    // If database error, show default navigation
+                    ?>
                     <li class="nav-item">
                         <a class="nav-link <?php echo basename($_SERVER['PHP_SELF']) === 'index.php' ? 'active' : ''; ?>" href="index.php">Home</a>
                     </li>
@@ -111,10 +197,13 @@ $is_blog_page = strpos($_SERVER['PHP_SELF'], 'blog') !== false;
                         </a>
                     </li>
                     <?php endif; ?>
-                </ul>
-            </div>
+                    <?php
+                }
+                ?>
+            </ul>
         </div>
-    </nav>
+    </div>
+</nav>
     
     <?php if (isset($is_blog_post) && $is_blog_post): ?>
     <!-- Blog Post Breadcrumb Navigation -->

@@ -1,237 +1,210 @@
 <?php
-// Include database connection and auth check
+// Include database connection
 require_once '../../includes/db.php';
 require_once '../../includes/auth.php';
 require_once '../../includes/functions.php';
 
-// Make sure upload directory exists
-$upload_dir = '../../uploads/pages/';
-if (!file_exists($upload_dir)) {
-    mkdir($upload_dir, 0777, true);
-}
+// Log access for debugging
+error_log("Pages create.php accessed at " . date('Y-m-d H:i:s'));
 
 // Initialize variables
 $errors = [];
 $title = '';
+$slug = '';
 $content = '';
 $meta_description = '';
 $status = 'published';
 $featured_image = '';
 
+// Check if the pages table exists
+try {
+    // Check if table exists
+    $tableExists = false;
+    $tables = $pdo->query("SHOW TABLES")->fetchAll(PDO::FETCH_COLUMN);
+    if (in_array('pages', $tables)) {
+        $tableExists = true;
+    }
+    
+    // Create table if it doesn't exist
+    if (!$tableExists) {
+        error_log("Creating pages table");
+        $sql = "CREATE TABLE `pages` (
+            `id` int(11) NOT NULL AUTO_INCREMENT,
+            `title` varchar(255) NOT NULL,
+            `slug` varchar(255) NOT NULL,
+            `content` text NOT NULL,
+            `meta_description` varchar(255) DEFAULT NULL,
+            `featured_image` varchar(255) DEFAULT NULL,
+            `status` enum('published','draft') NOT NULL DEFAULT 'published',
+            `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `slug` (`slug`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
+        
+        $pdo->exec($sql);
+        error_log("Pages table created successfully");
+    }
+} catch (PDOException $e) {
+    error_log("Database error: " . $e->getMessage());
+    $errors[] = "Database error: " . $e->getMessage();
+}
+
 // Process form submission
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_page'])) {
-    // Log submission for debugging
-    error_log('Form submitted in pages/create.php');
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    error_log("Form submitted via POST");
     
-    // Dump all POST variables for debugging
-    error_log('POST data: ' . print_r($_POST, true));
+    // Get form data
+    $title = trim($_POST['title'] ?? '');
+    $content = $_POST['content'] ?? '';
+    $status = $_POST['status'] ?? 'published';
     
-    // Get form data with detailed validation
-    $title = isset($_POST['title']) ? trim($_POST['title']) : '';
-    error_log('Title value after retrieval: "' . $title . '"');
+    error_log("Title: " . $title);
+    error_log("Content length: " . strlen($content));
+    error_log("Status: " . $status);
     
-    $content = isset($_POST['content']) ? $_POST['content'] : '';
-    $meta_description = isset($_POST['meta_description']) ? trim($_POST['meta_description']) : '';
-    $status = isset($_POST['status']) ? $_POST['status'] : 'published';
-    $featured_image = '';
-    $show_in_menu = isset($_POST['show_in_menu']) ? 1 : 0;
-    $show_in_footer = isset($_POST['show_in_footer']) ? 1 : 0;
-    
-    // Debug log
-    error_log('Form data: ' . json_encode([
-        'title' => $title,
-        'content_length' => strlen($content),
-        'status' => $status,
-        'show_in_menu' => $show_in_menu,
-        'show_in_footer' => $show_in_footer
-    ]));
-    
-    // Strict validation for required fields
+    // Validate inputs
     if (empty($title)) {
         $errors[] = 'Page title is required';
-        error_log('Validation error: Page title is empty');
+        error_log("Validation error: Title is required");
     }
     
     if (empty($content)) {
         $errors[] = 'Page content is required';
-        error_log('Validation error: Page content is empty');
+        error_log("Validation error: Content is required");
     }
     
-    if (empty($meta_description)) {
-        // Generate meta description from content if empty
-        $meta_description = generateExcerpt($content, 160);
-    }
-
-    // Create slug from title
-    $slug = createSlug($title);
-    
-    // Check if a file was uploaded
-    if (isset($_FILES['featured_image']) && $_FILES['featured_image']['error'] === 0) {
-        $allowed = ['jpg', 'jpeg', 'png', 'gif'];
-        $file_name = $_FILES['featured_image']['name'];
-        $file_tmp = $_FILES['featured_image']['tmp_name'];
-        $file_ext = strtolower(pathinfo($file_name, PATHINFO_EXTENSION));
-        
-        // Check if the file type is allowed
-        if (in_array($file_ext, $allowed)) {
-            // Generate unique filename
-            $new_file_name = uniqid('page_') . '.' . $file_ext;
-            $upload_path = $upload_dir . $new_file_name;
-            
-            // Move the file to the uploads directory
-            if (move_uploaded_file($file_tmp, $upload_path)) {
-                $featured_image = '/uploads/pages/' . $new_file_name;
-            } else {
-                $errors[] = 'Failed to upload image';
-            }
-        } else {
-            $errors[] = 'Only JPG, JPEG, PNG, and GIF files are allowed';
-        }
-    }
-    
-    // Check for duplicate slug
-    $check_query = "SELECT COUNT(*) as count FROM pages WHERE slug = :slug";
-    $check_stmt = $pdo->prepare($check_query);
-    $check_stmt->bindParam(':slug', $slug);
-    $check_stmt->execute();
-    $row = $check_stmt->fetch();
-    
-    if ($row['count'] > 0) {
-        // Add unique identifier to make slug unique
-        $slug = $slug . '-' . date('mdY');
-    }
-    
-    // If no errors, create the page
+    // If no validation errors, proceed
     if (empty($errors)) {
+        // Generate slug from title if not provided
+        $slug = isset($_POST['slug']) && !empty($_POST['slug']) ? createSlug($_POST['slug']) : createSlug($title);
+        error_log("Generated slug: " . $slug);
+        
+        // Generate meta description if not provided
+        $meta_description = !empty($_POST['meta_description']) ? trim($_POST['meta_description']) : generateExcerpt($content, 160);
+        
+        // Check for duplicate slug
         try {
-            // Check if the pages table has the menu columns
-            $columnsExist = true;
-            try {
-                $checkQuery = "SELECT show_in_menu, show_in_footer FROM pages LIMIT 0";
-                $pdo->query($checkQuery);
-            } catch (PDOException $e) {
-                $columnsExist = false;
-                error_log('Menu columns do not exist in pages table: ' . $e->getMessage());
-            }
+            $check_query = "SELECT COUNT(*) as count FROM pages WHERE slug = :slug";
+            $check_stmt = $pdo->prepare($check_query);
+            $check_stmt->bindParam(':slug', $slug);
+            $check_stmt->execute();
+            $row = $check_stmt->fetch();
             
-            // Prepare the INSERT query based on column existence
-            if ($columnsExist) {
-                $query = "INSERT INTO pages (
-                    title, 
-                    slug, 
-                    content, 
-                    meta_description, 
-                    featured_image, 
-                    status, 
-                    show_in_menu,
-                    show_in_footer,
-                    created_at, 
-                    updated_at
-                ) VALUES (
-                    :title, 
-                    :slug, 
-                    :content, 
-                    :meta_description, 
-                    :featured_image, 
-                    :status,
-                    :show_in_menu,
-                    :show_in_footer,
-                    NOW(), 
-                    NOW()
-                )";
-            } else {
-                $query = "INSERT INTO pages (
-                    title, 
-                    slug, 
-                    content, 
-                    meta_description, 
-                    featured_image, 
-                    status, 
-                    created_at, 
-                    updated_at
-                ) VALUES (
-                    :title, 
-                    :slug, 
-                    :content, 
-                    :meta_description, 
-                    :featured_image, 
-                    :status,
-                    NOW(), 
-                    NOW()
-                )";
-            }
-            
-            $stmt = $pdo->prepare($query);
-            $stmt->bindParam(':title', $title);
-            $stmt->bindParam(':slug', $slug);
-            $stmt->bindParam(':content', $content);
-            $stmt->bindParam(':meta_description', $meta_description);
-            $stmt->bindParam(':featured_image', $featured_image);
-            $stmt->bindParam(':status', $status);
-            
-            if ($columnsExist) {
-                $stmt->bindParam(':show_in_menu', $show_in_menu, PDO::PARAM_INT);
-                $stmt->bindParam(':show_in_footer', $show_in_footer, PDO::PARAM_INT);
-            }
-            
-            $result = $stmt->execute();
-            
-            if (!$result) {
-                error_log('Failed to execute query: ' . json_encode($stmt->errorInfo()));
-                $errors[] = 'Database error: ' . implode(', ', $stmt->errorInfo());
-            } else {
-                // Set success message
-                $_SESSION['success_message'] = 'Page created successfully!';
-                
-                // Redirect to the pages list
-                header('Location: list.php');
-                exit;
+            if ($row['count'] > 0) {
+                // Add unique identifier to make slug unique
+                $slug = $slug . '-' . date('mdY');
+                error_log("Modified slug for uniqueness: " . $slug);
             }
         } catch (PDOException $e) {
-            // Database error
-            $errors[] = 'Database error: ' . $e->getMessage();
+            error_log("Error checking for duplicate slug: " . $e->getMessage());
+            $errors[] = "Error checking for duplicate slug: " . $e->getMessage();
+        }
+        
+        // If still no errors, insert the page
+        if (empty($errors)) {
+            try {
+                error_log("Attempting to create page");
+                
+                // Very basic insert query - stripped down to essentials
+                $query = "INSERT INTO pages (title, slug, content, meta_description, status, created_at, updated_at) 
+                          VALUES (:title, :slug, :content, :meta_description, :status, NOW(), NOW())";
+                
+                $stmt = $pdo->prepare($query);
+                $stmt->bindParam(':title', $title);
+                $stmt->bindParam(':slug', $slug);
+                $stmt->bindParam(':content', $content);
+                $stmt->bindParam(':meta_description', $meta_description);
+                $stmt->bindParam(':status', $status);
+                
+                error_log("Executing INSERT query");
+                $stmt->execute();
+                
+                $page_id = $pdo->lastInsertId();
+                error_log("Page created successfully with ID: " . $page_id);
+                
+                // Add to navigation menu if requested
+                if (isset($_POST['add_to_navigation']) && $_POST['add_to_navigation'] == '1') {
+                    try {
+                        $location = isset($_POST['nav_location']) ? $_POST['nav_location'] : 'header';
+                        error_log("Adding page to navigation menu. Location: " . $location);
+                        
+                        // Check if navigation table exists
+                        if (in_array('navigation', $tables)) {
+                            // Get highest display order
+                            $order_query = "SELECT MAX(display_order) as max_order FROM navigation";
+                            $order_stmt = $pdo->prepare($order_query);
+                            $order_stmt->execute();
+                            $order_result = $order_stmt->fetch();
+                            $display_order = ($order_result && isset($order_result['max_order'])) ? $order_result['max_order'] + 1 : 5;
+                            
+                            // Add to navigation
+                            $nav_query = "INSERT INTO navigation (title, url, page_id, display_order, location, is_active) 
+                                          VALUES (:title, :url, :page_id, :display_order, :location, 1)";
+                            $nav_stmt = $pdo->prepare($nav_query);
+                            $nav_stmt->bindParam(':title', $title);
+                            $nav_stmt->bindParam(':url', $slug);
+                            $nav_stmt->bindParam(':page_id', $page_id);
+                            $nav_stmt->bindParam(':display_order', $display_order);
+                            $nav_stmt->bindParam(':location', $location);
+                            $nav_stmt->execute();
+                            
+                            error_log("Page added to navigation menu");
+                        } else {
+                            error_log("Navigation table doesn't exist");
+                        }
+                    } catch (PDOException $e) {
+                        error_log("Error adding page to navigation: " . $e->getMessage());
+                        // Don't stop the process if navigation fails
+                    }
+                }
+                
+                // Set success message and redirect
+                $_SESSION['success_message'] = 'Page created successfully!';
+                error_log("Redirecting to list.php");
+                header('Location: list.php');
+                exit;
+                
+            } catch (PDOException $e) {
+                error_log("Error creating page: " . $e->getMessage());
+                $errors[] = 'Database error: ' . $e->getMessage();
+            }
         }
     }
 }
 
 // Page variables
 $page_title = 'Create Page';
-$use_tinymce = true;
+$use_tinymce = false; // Don't use TinyMCE for now to simplify
 
 // Header actions
 $header_actions = '
 <a href="list.php" class="btn btn-sm btn-outline-secondary">
-    <i class="fas fa-arrow-left me-1"></i> Back to Pages
+    <i class="fas fa-arrow-left me-1"></i> Back to List
 </a>
 ';
-
-// Extra head content
-$extra_head = '<style>
-    #featured-image-preview {
-        max-width: 100%;
-        height: auto;
-        max-height: 200px;
-        border-radius: 0.25rem;
-    }
-</style>';
 
 // Include admin header
 include_once '../includes/header.php';
 ?>
 
-<?php if (!empty($errors)): ?>
-    <div class="alert alert-danger">
-        <ul class="mb-0">
-            <?php foreach ($errors as $error): ?>
-                <li><?php echo htmlspecialchars($error); ?></li>
-            <?php endforeach; ?>
-        </ul>
-    </div>
-<?php endif; ?>
-
+<!-- Simplified form based on direct-submit.php -->
 <div class="card shadow mb-4">
+    <div class="card-header py-3">
+        <h6 class="m-0 font-weight-bold">Create New Page</h6>
+    </div>
     <div class="card-body">
-        <form action="create.php" method="post" enctype="multipart/form-data">
+        <?php if (!empty($errors)): ?>
+            <div class="alert alert-danger">
+                <ul class="mb-0">
+                    <?php foreach ($errors as $error): ?>
+                        <li><?php echo htmlspecialchars($error); ?></li>
+                    <?php endforeach; ?>
+                </ul>
+            </div>
+        <?php endif; ?>
+        
+        <form action="create.php" method="post">
             <div class="row">
                 <div class="col-md-8">
                     <!-- Main Content Fields -->
@@ -242,11 +215,7 @@ include_once '../includes/header.php';
                     
                     <div class="mb-3">
                         <label for="content" class="form-label">Content *</label>
-                        <textarea class="form-control editor <?php echo empty($content) && $_SERVER['REQUEST_METHOD'] === 'POST' ? 'is-invalid' : ''; ?>" 
-                                 id="content" name="content" rows="15" required><?php echo htmlspecialchars($content); ?></textarea>
-                        <?php if (empty($content) && $_SERVER['REQUEST_METHOD'] === 'POST'): ?>
-                            <div class="invalid-feedback">Page content is required.</div>
-                        <?php endif; ?>
+                        <textarea class="form-control" id="content" name="content" rows="15" required><?php echo htmlspecialchars($content); ?></textarea>
                     </div>
                 </div>
                 
@@ -264,25 +233,30 @@ include_once '../includes/header.php';
                                     <option value="draft" <?php echo $status === 'draft' ? 'selected' : ''; ?>>Draft</option>
                                 </select>
                             </div>
-                            <button type="submit" name="submit_page" value="1" class="btn btn-primary w-100 btn-lg">
-                                <i class="fas fa-save me-1"></i> Publish Page
-                            </button>
-                        </div>
-                    </div>
-                    
-                    <div class="card mb-3">
-                        <div class="card-header">
-                            <h5 class="card-title mb-0">Featured Image</h5>
-                        </div>
-                        <div class="card-body">
+                            
                             <div class="mb-3">
-                                <label for="featured_image" class="form-label">Upload Image</label>
-                                <input class="form-control" type="file" id="featured_image" name="featured_image">
-                                <div class="form-text">Recommended size: 1200x630 pixels</div>
+                                <div class="form-check">
+                                    <input type="checkbox" class="form-check-input" id="add_to_navigation" name="add_to_navigation" value="1" checked>
+                                    <label class="form-check-label" for="add_to_navigation">Add to Navigation Menu</label>
+                                </div>
+                                
+                                <div class="mt-2 ps-4 nav-location-options">
+                                    <div class="form-check">
+                                        <input type="radio" class="form-check-input" id="nav_location_header" name="nav_location" value="header" checked>
+                                        <label class="form-check-label" for="nav_location_header">Header Only</label>
+                                    </div>
+                                    <div class="form-check">
+                                        <input type="radio" class="form-check-input" id="nav_location_footer" name="nav_location" value="footer">
+                                        <label class="form-check-label" for="nav_location_footer">Footer Only</label>
+                                    </div>
+                                    <div class="form-check">
+                                        <input type="radio" class="form-check-input" id="nav_location_both" name="nav_location" value="both">
+                                        <label class="form-check-label" for="nav_location_both">Both Header & Footer</label>
+                                    </div>
+                                </div>
                             </div>
-                            <div id="imagePreviewContainer" class="mt-2 d-none">
-                                <img id="imagePreview" src="" alt="Image Preview" class="img-fluid">
-                            </div>
+                            
+                            <button type="submit" class="btn btn-primary w-100">Create Page</button>
                         </div>
                     </div>
                     
@@ -294,30 +268,7 @@ include_once '../includes/header.php';
                             <div class="mb-3">
                                 <label for="meta_description" class="form-label">Meta Description</label>
                                 <textarea class="form-control" id="meta_description" name="meta_description" rows="3"><?php echo htmlspecialchars($meta_description); ?></textarea>
-                                <div class="form-text">If left empty, it will be generated from the content. Recommended length: 150-160 characters.</div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="card mb-3">
-                        <div class="card-header">
-                            <h5 class="card-title mb-0">Page Options</h5>
-                        </div>
-                        <div class="card-body">
-                            <div class="form-check mb-3">
-                                <input class="form-check-input" type="checkbox" id="show_in_menu" name="show_in_menu" checked>
-                                <label class="form-check-label" for="show_in_menu">
-                                    Show in Navigation Menu
-                                </label>
-                                <div class="form-text">Display this page in the main navigation menu.</div>
-                            </div>
-                            
-                            <div class="form-check mb-3">
-                                <input class="form-check-input" type="checkbox" id="show_in_footer" name="show_in_footer" checked>
-                                <label class="form-check-label" for="show_in_footer">
-                                    Show in Footer Menu
-                                </label>
-                                <div class="form-text">Display this page in the footer menu.</div>
+                                <div class="form-text">If left empty, an excerpt will be generated automatically.</div>
                             </div>
                         </div>
                     </div>
@@ -327,92 +278,30 @@ include_once '../includes/header.php';
     </div>
 </div>
 
-<?php 
-// Include admin footer
-include_once '../includes/footer.php'; 
-?>
 
 <script>
-// Form validation and submission
+// Toggle navigation options based on checkbox
 document.addEventListener('DOMContentLoaded', function() {
-    // Get form elements
-    const form = document.getElementById('createPageForm');
-    const titleField = document.getElementById('title');
-    const contentField = document.getElementById('content');
+    const navCheckbox = document.getElementById('add_to_navigation');
+    const navOptions = document.querySelector('.nav-location-options');
     
-    // Image preview
-    document.getElementById('featured_image').addEventListener('change', function(event) {
-        var preview = document.getElementById('imagePreview');
-        var previewContainer = document.getElementById('imagePreviewContainer');
-        var file = event.target.files[0];
-        
-        if (file) {
-            var reader = new FileReader();
-            
-            reader.onload = function(e) {
-                preview.src = e.target.result;
-                previewContainer.classList.remove('d-none');
-            };
-            
-            reader.readAsDataURL(file);
+    function toggleNavOptions() {
+        if (navCheckbox.checked) {
+            navOptions.style.display = 'block';
         } else {
-            previewContainer.classList.add('d-none');
+            navOptions.style.display = 'none';
         }
-    });
+    }
     
-    // Handle form submission to validate before submitting
-    form.addEventListener('submit', function(event) {
-        let isValid = true;
-        
-        // Validate title
-        if (!titleField.value.trim()) {
-            isValid = false;
-            titleField.classList.add('is-invalid');
-            
-            // Add custom error message if not already present
-            if (!document.querySelector('.title-error')) {
-                const errorDiv = document.createElement('div');
-                errorDiv.className = 'invalid-feedback title-error';
-                errorDiv.textContent = 'Page title is required.';
-                titleField.parentNode.appendChild(errorDiv);
-            }
-            console.log('Title validation failed');
-        } else {
-            titleField.classList.remove('is-invalid');
-            console.log('Title validation passed: ' + titleField.value.trim());
-        }
-        
-        // Special handling for TinyMCE content if TinyMCE is active
-        if (typeof tinymce !== 'undefined' && tinymce.get('content')) {
-            const content = tinymce.get('content').getContent();
-            
-            if (!content.trim()) {
-                isValid = false;
-                // Add a red border to the TinyMCE editor
-                tinymce.get('content').getContainer().style.border = '1px solid #dc3545';
-                console.log('TinyMCE content validation failed');
-            } else {
-                tinymce.get('content').getContainer().style.border = '';
-                console.log('TinyMCE content validation passed: ' + content.substr(0, 50) + '...');
-            }
-        } else if (!contentField.value.trim()) {
-            // Regular textarea validation if TinyMCE is not active
-            isValid = false;
-            contentField.classList.add('is-invalid');
-            console.log('Content validation failed');
-        } else {
-            contentField.classList.remove('is-invalid');
-            console.log('Content validation passed');
-        }
-        
-        // Prevent form submission if validation fails
-        if (!isValid) {
-            event.preventDefault();
-            // Scroll to the top of the form to show error messages
-            window.scrollTo(0, form.offsetTop - 100);
-        } else {
-            console.log('Form validation passed, submitting...');
-        }
-    });
+    // Set initial state
+    toggleNavOptions();
+    
+    // Add event listener
+    navCheckbox.addEventListener('change', toggleNavOptions);
 });
 </script>
+
+<?php
+// Include admin footer
+include_once '../includes/footer.php';
+?>

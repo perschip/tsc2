@@ -131,6 +131,71 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
 }
 
+// Add a new stream to the schedule
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'add_scheduled_stream') {
+    // Clean input data - remove emojis and special characters
+    $stream_title = removeEmojis(trim($_POST['schedule_stream_title'])); 
+    $scheduled_time = !empty($_POST['schedule_time']) ? $_POST['schedule_time'] : null;
+    
+    // Validate inputs
+    $errors = [];
+    
+    if (empty($stream_title)) {
+        $errors[] = 'Stream title is required';
+    }
+    
+    if (empty($scheduled_time)) {
+        $errors[] = 'Scheduled time is required for upcoming streams';
+    }
+    
+    // Save scheduled stream if no errors
+    if (empty($errors)) {
+        try {
+            // Insert stream status (as not live)
+            $query = "INSERT INTO whatnot_status (is_live, stream_title, stream_url, scheduled_time, last_checked) 
+                      VALUES (0, :stream_title, '', :scheduled_time, NOW())";
+                      
+            $stmt = $pdo->prepare($query);
+            $stmt->bindParam(':stream_title', $stream_title);
+            $stmt->bindParam(':scheduled_time', $scheduled_time);
+            $stmt->execute();
+            
+            // Set success message
+            $_SESSION['success_message'] = 'New stream scheduled successfully!';
+            
+            // Redirect to refresh the page
+            header('Location: settings.php');
+            exit;
+            
+        } catch (PDOException $e) {
+            $errors[] = 'Database error: ' . $e->getMessage();
+        }
+    }
+}
+
+// Delete a scheduled stream
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_scheduled_stream') {
+    $stream_id = (int)$_POST['stream_id'];
+    
+    try {
+        // Delete the stream
+        $query = "DELETE FROM whatnot_status WHERE id = :id AND is_live = 0";
+        $stmt = $pdo->prepare($query);
+        $stmt->bindParam(':id', $stream_id, PDO::PARAM_INT);
+        $stmt->execute();
+        
+        // Set success message
+        $_SESSION['success_message'] = 'Scheduled stream removed successfully!';
+        
+        // Redirect to refresh the page
+        header('Location: settings.php');
+        exit;
+        
+    } catch (PDOException $e) {
+        $errors[] = 'Database error: ' . $e->getMessage();
+    }
+}
+
 // Check if ending stream
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['end_stream'])) {
     try {
@@ -188,6 +253,21 @@ try {
     $errors[] = 'Status table error: ' . $e->getMessage();
 }
 
+// Get all upcoming scheduled streams
+try {
+    $scheduled_query = "SELECT * FROM whatnot_status 
+                       WHERE is_live = 0 
+                       AND scheduled_time IS NOT NULL 
+                       AND scheduled_time > NOW() 
+                       ORDER BY scheduled_time ASC";
+    $scheduled_stmt = $pdo->prepare($scheduled_query);
+    $scheduled_stmt->execute();
+    $scheduled_streams = $scheduled_stmt->fetchAll();
+} catch (PDOException $e) {
+    $scheduled_streams = [];
+    $errors[] = 'Scheduled streams error: ' . $e->getMessage();
+}
+
 // Page variables
 $page_title = 'Whatnot Integration Settings';
 
@@ -218,6 +298,37 @@ document.addEventListener("DOMContentLoaded", function() {
     // Add event listeners
     streamStatus.forEach(radio => {
         radio.addEventListener("change", toggleFields);
+    });
+    
+    // Initialize date/time pickers
+    const datetimeInputs = document.querySelectorAll("input[type=\'datetime-local\']");
+    if (datetimeInputs.length > 0) {
+        // Set min date to now
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, "0");
+        const day = String(now.getDate()).padStart(2, "0");
+        const hours = String(now.getHours()).padStart(2, "0");
+        const minutes = String(now.getMinutes()).padStart(2, "0");
+        
+        const nowString = `${year}-${month}-${day}T${hours}:${minutes}`;
+        
+        datetimeInputs.forEach(input => {
+            if (!input.value) {
+                input.value = nowString;
+            }
+            input.min = nowString;
+        });
+    }
+    
+    // Confirm delete
+    const deleteButtons = document.querySelectorAll(".delete-stream-btn");
+    deleteButtons.forEach(button => {
+        button.addEventListener("click", function(e) {
+            if (!confirm("Are you sure you want to delete this scheduled stream?")) {
+                e.preventDefault();
+            }
+        });
     });
 });
 </script>
@@ -350,33 +461,97 @@ include_once '../includes/header.php';
             </div>
         </div>
         
+        <!-- Schedule Stream List -->
         <div class="card shadow mb-4">
-            <div class="card-header py-3">
-                <h5 class="mb-0 fw-bold">What is Whatnot?</h5>
+            <div class="card-header py-3 d-flex justify-content-between align-items-center">
+                <h5 class="mb-0 fw-bold">Upcoming Scheduled Streams</h5>
+                <button class="btn btn-sm btn-success" type="button" data-bs-toggle="collapse" data-bs-target="#scheduleStreamForm" aria-expanded="false">
+                    <i class="fas fa-plus"></i> Add Stream
+                </button>
             </div>
             <div class="card-body">
-                <p><a href="https://www.whatnot.com" target="_blank">Whatnot</a> is a live streaming platform for collectors and enthusiasts to buy, sell, and interact with their communities.</p>
-                
-                <h6 class="mt-3 mb-2">Why integrate with your website?</h6>
-                <ul>
-                    <li>Automatically show when you're live streaming</li>
-                    <li>Promote upcoming streams</li>
-                    <li>Drive more viewers to your Whatnot streams</li>
-                    <li>Track conversions from your website to Whatnot</li>
-                </ul>
-                
-                <div class="alert alert-info mt-3">
-                    <i class="fas fa-info-circle me-2"></i> Don't have a Whatnot account? 
-                    <a href="https://www.whatnot.com/signup" target="_blank" class="alert-link">Sign up here</a> 
-                    to start streaming your cards and collectibles!
+                <!-- Add New Stream Form (Collapsed by default) -->
+                <div class="collapse mb-4" id="scheduleStreamForm">
+                    <div class="card card-body bg-light">
+                        <h6 class="card-title">Schedule New Stream</h6>
+                        <form action="settings.php" method="post">
+                            <input type="hidden" name="action" value="add_scheduled_stream">
+                            
+                            <div class="mb-3">
+                                <label for="schedule_stream_title" class="form-label">Stream Title * <small class="text-danger">(no emojis please)</small></label>
+                                <div class="input-group">
+                                    <span class="input-group-text"><i class="fas fa-heading"></i></span>
+                                    <input type="text" class="form-control" id="schedule_stream_title" name="schedule_stream_title" required
+                                           placeholder="e.g., Baseball Card Breaks - Topps Series 2">
+                                </div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="schedule_time" class="form-label">Scheduled Time *</label>
+                                <div class="input-group">
+                                    <span class="input-group-text"><i class="fas fa-calendar-alt"></i></span>
+                                    <input type="datetime-local" class="form-control" id="schedule_time" name="schedule_time" required>
+                                </div>
+                            </div>
+                            
+                            <button type="submit" class="btn btn-success">
+                                <i class="fas fa-calendar-plus me-1"></i> Schedule Stream
+                            </button>
+                        </form>
+                    </div>
                 </div>
+                
+                <!-- Stream List -->
+                <?php if (empty($scheduled_streams)): ?>
+                    <div class="text-center py-4">
+                        <div class="text-muted mb-3"><i class="fas fa-calendar-times fa-3x"></i></div>
+                        <p>No upcoming streams scheduled</p>
+                        <button class="btn btn-primary" type="button" data-bs-toggle="collapse" data-bs-target="#scheduleStreamForm" aria-expanded="false">
+                            <i class="fas fa-plus me-1"></i> Schedule Your First Stream
+                        </button>
+                    </div>
+                <?php else: ?>
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Stream Title</th>
+                                    <th>Scheduled Date</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($scheduled_streams as $stream): ?>
+                                    <tr>
+                                        <td><?php echo htmlspecialchars($stream['stream_title']); ?></td>
+                                        <td><?php echo date('M j, Y - g:i A', strtotime($stream['scheduled_time'])); ?></td>
+                                        <td>
+                                            <form method="post" class="d-inline">
+                                                <input type="hidden" name="action" value="delete_scheduled_stream">
+                                                <input type="hidden" name="stream_id" value="<?php echo $stream['id']; ?>">
+                                                <button type="submit" class="btn btn-sm btn-outline-danger delete-stream-btn">
+                                                    <i class="fas fa-trash"></i>
+                                                </button>
+                                            </form>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="text-center mt-3">
+                        <button class="btn btn-success" type="button" data-bs-toggle="collapse" data-bs-target="#scheduleStreamForm" aria-expanded="false">
+                            <i class="fas fa-plus me-1"></i> Add Another Stream
+                        </button>
+                    </div>
+                <?php endif; ?>
             </div>
         </div>
     </div>
 
     <div class="col-md-6">
         <!-- Manual Stream Update -->
-        <div class="card shadow mb-4" id="update-stream">
+        <div class="card shadow mb-4 collapse" id="update-stream">
             <div class="card-header py-3">
                 <h5 class="mb-0 fw-bold">Update Stream Status</h5>
             </div>
@@ -442,6 +617,30 @@ include_once '../includes/header.php';
                         </button>
                     <?php endif; ?>
                 </form>
+            </div>
+        </div>
+        
+        <!-- What is Whatnot Card (Moved here from left side) -->
+        <div class="card shadow mb-4">
+            <div class="card-header py-3">
+                <h5 class="mb-0 fw-bold">What is Whatnot?</h5>
+            </div>
+            <div class="card-body">
+                <p><a href="https://www.whatnot.com" target="_blank">Whatnot</a> is a live streaming platform for collectors and enthusiasts to buy, sell, and interact with their communities.</p>
+                
+                <h6 class="mt-3 mb-2">Why integrate with your website?</h6>
+                <ul>
+                    <li>Automatically show when you're live streaming</li>
+                    <li>Promote upcoming streams</li>
+                    <li>Drive more viewers to your Whatnot streams</li>
+                    <li>Track conversions from your website to Whatnot</li>
+                </ul>
+                
+                <div class="alert alert-info mt-3">
+                    <i class="fas fa-info-circle me-2"></i> Don't have a Whatnot account? 
+                    <a href="https://www.whatnot.com/signup" target="_blank" class="alert-link">Sign up here</a> 
+                    to start streaming your cards and collectibles!
+                </div>
             </div>
         </div>
         

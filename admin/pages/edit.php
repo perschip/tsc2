@@ -1,39 +1,16 @@
 <?php
-// Include database connection and auth check
+// Include database connection
 require_once '../../includes/db.php';
 require_once '../../includes/auth.php';
 require_once '../../includes/functions.php';
 
-// Check if page ID is provided
-if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
-    $_SESSION['error_message'] = 'Invalid page ID';
-    header('Location: list.php');
-    exit;
-}
-
-$page_id = (int)$_GET['id'];
-
-// Get page data
-try {
-    $query = "SELECT * FROM pages WHERE id = :id LIMIT 1";
-    $stmt = $pdo->prepare($query);
-    $stmt->bindParam(':id', $page_id);
-    $stmt->execute();
-    $page = $stmt->fetch();
-    
-    if (!$page) {
-        $_SESSION['error_message'] = 'Page not found';
-        header('Location: list.php');
-        exit;
-    }
-} catch (PDOException $e) {
-    $_SESSION['error_message'] = 'Database error: ' . $e->getMessage();
-    header('Location: list.php');
-    exit;
-}
-
 // Initialize variables
 $errors = [];
+$title = '';
+$slug = '';
+$content = '';
+$meta_description = '';
+$status = 'published';
 
 // Make sure upload directory exists
 $upload_dir = '../../uploads/pages/';
@@ -41,17 +18,48 @@ if (!file_exists($upload_dir)) {
     mkdir($upload_dir, 0777, true);
 }
 
+// Check if the pages table exists and has the right columns
+try {
+    // Check if pages table exists
+    $tableCheck = $pdo->query("SHOW TABLES LIKE 'pages'");
+    if ($tableCheck->rowCount() == 0) {
+        // Create pages table with all required columns
+        $createTable = "CREATE TABLE IF NOT EXISTS `pages` (
+            `id` int(11) NOT NULL AUTO_INCREMENT,
+            `title` varchar(255) NOT NULL,
+            `slug` varchar(255) NOT NULL,
+            `content` text NOT NULL,
+            `meta_description` varchar(255) DEFAULT NULL,
+            `featured_image` varchar(255) DEFAULT NULL,
+            `status` enum('published','draft') NOT NULL DEFAULT 'published',
+            `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `slug` (`slug`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
+        
+        $pdo->exec($createTable);
+    } else {
+        // Table exists, check if featured_image column exists
+        $columnCheck = $pdo->query("SHOW COLUMNS FROM pages LIKE 'featured_image'");
+        if ($columnCheck->rowCount() == 0) {
+            // Add featured_image column
+            $pdo->exec("ALTER TABLE pages ADD COLUMN featured_image varchar(255) DEFAULT NULL AFTER meta_description");
+        }
+    }
+} catch (PDOException $e) {
+    $errors[] = 'Database setup error: ' . $e->getMessage();
+}
+
 // Process form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Get form data with null coalescing to handle undefined indexes
-    $title = trim($_POST['title'] ?? '');
-    $content = $_POST['content'] ?? '';
-    $meta_description = trim($_POST['meta_description'] ?? '');
-    $status = $_POST['status'] ?? 'published';
+    // Get form data
+    $title = trim($_POST['title']);
     $slug = isset($_POST['slug']) && !empty($_POST['slug']) ? createSlug($_POST['slug']) : createSlug($title);
-    
-    // Initialize the featured image variable
-    $featured_image = $page['featured_image'] ?? ''; // Default to existing or empty if not set
+    $content = $_POST['content'];
+    $meta_description = trim($_POST['meta_description']);
+    $status = $_POST['status'];
+    $featured_image = null; // Default to null instead of empty string
     
     // Validate inputs
     if (empty($title)) {
@@ -63,8 +71,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     
     if (empty($meta_description)) {
-        // Generate meta description from content if empty
+        // Use excerpt as meta description if empty
         $meta_description = generateExcerpt($content, 160);
+    }
+
+    // Check for duplicate slug
+    $check_query = "SELECT COUNT(*) as count FROM pages WHERE slug = :slug";
+    $check_stmt = $pdo->prepare($check_query);
+    $check_stmt->bindParam(':slug', $slug);
+    $check_stmt->execute();
+    $row = $check_stmt->fetch();
+    
+    if ($row['count'] > 0) {
+        // Add unique identifier to make slug unique
+        $slug = $slug . '-' . date('mdY');
     }
     
     // Check if a file was uploaded
@@ -83,11 +103,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // Move the file to the uploads directory
             if (move_uploaded_file($file_tmp, $upload_path)) {
                 $featured_image = '/uploads/pages/' . $new_file_name;
-                
-                // Delete the old image if it exists
-                if (!empty($page['featured_image']) && file_exists('../../' . ltrim($page['featured_image'], '/'))) {
-                    unlink('../../' . ltrim($page['featured_image'], '/'));
-                }
             } else {
                 $errors[] = 'Failed to upload image';
             }
@@ -96,102 +111,78 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
     
-    // Check for duplicate slug
-    if ($slug !== $page['slug']) {
-        $check_query = "SELECT COUNT(*) as count FROM pages WHERE slug = :slug AND id != :id";
-        $check_stmt = $pdo->prepare($check_query);
-        $check_stmt->bindParam(':slug', $slug);
-        $check_stmt->bindParam(':id', $page_id);
-        $check_stmt->execute();
-        $row = $check_stmt->fetch();
-        
-        if ($row['count'] > 0) {
-            // Add unique identifier to make slug unique
-            $slug = $slug . '-' . date('mdY');
-        }
-    }
-    
-    // Process menu options - checking for columns first
-    $columnsExist = true;
-    try {
-        $checkQuery = "SELECT show_in_menu, show_in_footer FROM pages LIMIT 0";
-        $pdo->query($checkQuery);
-    } catch (PDOException $e) {
-        $columnsExist = false;
-        error_log('Menu columns do not exist in pages table: ' . $e->getMessage());
-    }
-    
-    $show_in_menu = isset($_POST['show_in_menu']) ? 1 : 0;
-    $show_in_footer = isset($_POST['show_in_footer']) ? 1 : 0;
-    
-    // If no errors, update the page
+    // If no errors, create the page
     if (empty($errors)) {
         try {
-            // Build the SQL query based on column existence
-            if ($columnsExist) {
-                $query = "UPDATE pages 
-                          SET title = :title, 
-                              slug = :slug, 
-                              content = :content, 
-                              meta_description = :meta_description, 
-                              featured_image = :featured_image,
-                              status = :status,
-                              show_in_menu = :show_in_menu,
-                              show_in_footer = :show_in_footer,
-                              updated_at = NOW()
-                          WHERE id = :id";
+            // Check if the featured_image column exists before including it in the query
+            $columnCheck = $pdo->query("SHOW COLUMNS FROM pages LIKE 'featured_image'");
+            if ($columnCheck->rowCount() > 0) {
+                // Insert with featured_image
+                $query = "INSERT INTO pages (title, slug, content, meta_description, featured_image, status, created_at, updated_at) 
+                          VALUES (:title, :slug, :content, :meta_description, :featured_image, :status, NOW(), NOW())";
+                
+                $stmt = $pdo->prepare($query);
+                $stmt->bindParam(':featured_image', $featured_image);
             } else {
-                $query = "UPDATE pages 
-                          SET title = :title, 
-                              slug = :slug, 
-                              content = :content, 
-                              meta_description = :meta_description, 
-                              featured_image = :featured_image,
-                              status = :status,
-                              updated_at = NOW()
-                          WHERE id = :id";
+                // Insert without featured_image
+                $query = "INSERT INTO pages (title, slug, content, meta_description, status, created_at, updated_at) 
+                          VALUES (:title, :slug, :content, :meta_description, :status, NOW(), NOW())";
+                
+                $stmt = $pdo->prepare($query);
             }
             
-            $stmt = $pdo->prepare($query);
             $stmt->bindParam(':title', $title);
             $stmt->bindParam(':slug', $slug);
             $stmt->bindParam(':content', $content);
             $stmt->bindParam(':meta_description', $meta_description);
-            $stmt->bindParam(':featured_image', $featured_image);
             $stmt->bindParam(':status', $status);
-            $stmt->bindParam(':id', $page_id);
-            
-            if ($columnsExist) {
-                $stmt->bindParam(':show_in_menu', $show_in_menu);
-                $stmt->bindParam(':show_in_footer', $show_in_footer);
-            }
             $stmt->execute();
             
-            // Set success message
-            $_SESSION['success_message'] = 'Page updated successfully!';
+            // Get the ID of the inserted page
+            $page_id = $pdo->lastInsertId();
             
-            // Redirect back to list
+            // Add to navigation if checkbox was checked
+            if (isset($_POST['add_to_navigation']) && $_POST['add_to_navigation'] == '1') {
+                // Check if navigation table exists
+                $nav_check = $pdo->query("SHOW TABLES LIKE 'navigation'");
+                if ($nav_check->rowCount() > 0) {
+                    // Get highest display_order
+                    $order_query = "SELECT MAX(display_order) as max_order FROM navigation";
+                    $order_stmt = $pdo->prepare($order_query);
+                    $order_stmt->execute();
+                    $order_result = $order_stmt->fetch();
+                    $display_order = ($order_result && isset($order_result['max_order'])) ? $order_result['max_order'] + 1 : 5;
+                    
+                    // Get location preference
+                    $location = isset($_POST['nav_location']) ? $_POST['nav_location'] : 'header';
+                    
+                    // Add to navigation table
+                    $nav_query = "INSERT INTO navigation (title, url, page_id, display_order, location, is_active) 
+                                VALUES (:title, :url, :page_id, :display_order, :location, 1)";
+                    $nav_stmt = $pdo->prepare($nav_query);
+                    $nav_stmt->bindParam(':title', $title);
+                    $nav_stmt->bindParam(':url', $slug);
+                    $nav_stmt->bindParam(':page_id', $page_id);
+                    $nav_stmt->bindParam(':display_order', $display_order);
+                    $nav_stmt->bindParam(':location', $location);
+                    $nav_stmt->execute();
+                }
+            }
+            
+            // Redirect to the page list with success message
+            $_SESSION['success_message'] = 'Page created successfully!';
             header('Location: list.php');
             exit;
+            
         } catch (PDOException $e) {
-            // Database error
             $errors[] = 'Database error: ' . $e->getMessage();
         }
     }
 }
 
 // Page variables
-$page_title = 'Edit Page';
+$page_title = 'Create Page';
 $use_tinymce = true;
-
-// Header actions
-$header_actions = '
-<a href="list.php" class="btn btn-sm btn-outline-secondary">
-    <i class="fas fa-arrow-left me-1"></i> Back to Pages
-</a>
-';
-
-// Extra head content
 $extra_head = '<style>
     #featured-image-preview {
         max-width: 100%;
@@ -200,6 +191,76 @@ $extra_head = '<style>
         border-radius: 0.25rem;
     }
 </style>';
+
+$header_actions = '
+<a href="list.php" class="btn btn-sm btn-outline-secondary">
+    <i class="fas fa-arrow-left me-1"></i> Back to List
+</a>
+';
+
+$extra_scripts = '
+<script>
+// Image preview
+document.getElementById("featured_image").addEventListener("change", function(event) {
+    const preview = document.getElementById("featured-image-preview");
+    const previewContainer = document.getElementById("image-preview-container");
+    const file = event.target.files[0];
+    
+    if (file) {
+        const reader = new FileReader();
+        
+        reader.onload = function(e) {
+            if (preview) {
+                preview.src = e.target.result;
+                previewContainer.classList.remove("d-none");
+            } else {
+                const newPreview = document.createElement("img");
+                newPreview.src = e.target.result;
+                newPreview.id = "featured-image-preview";
+                newPreview.alt = "Featured Image";
+                newPreview.classList.add("img-fluid");
+                document.querySelector("#featured_image").parentNode.prepend(newPreview);
+            }
+        };
+        
+        reader.readAsDataURL(file);
+    }
+});
+
+// Slug generator
+document.getElementById("title").addEventListener("blur", function() {
+    const slugField = document.getElementById("slug");
+    if (slugField.value === "") {
+        // Create a simple slug from the title
+        slugField.value = this.value
+            .toLowerCase()
+            .replace(/[^\w\s-]/g, "")
+            .replace(/\s+/g, "-")
+            .replace(/-+/g, "-")
+            .trim();
+    }
+});
+
+// Toggle navigation location options
+document.getElementById("add_to_navigation").addEventListener("change", function() {
+    const navLocationOptions = document.querySelector(".nav-location-options");
+    if (this.checked) {
+        navLocationOptions.style.display = "block";
+    } else {
+        navLocationOptions.style.display = "none";
+    }
+});
+
+// Initial state
+document.addEventListener("DOMContentLoaded", function() {
+    const addToNav = document.getElementById("add_to_navigation");
+    const navLocationOptions = document.querySelector(".nav-location-options");
+    
+    if (addToNav && navLocationOptions) {
+        navLocationOptions.style.display = addToNav.checked ? "block" : "none";
+    }
+});
+</script>';
 
 // Include admin header
 include_once '../includes/header.php';
@@ -217,13 +278,24 @@ include_once '../includes/header.php';
 
 <div class="card shadow mb-4">
     <div class="card-body">
-        <form action="edit.php?id=<?php echo $page_id; ?>" method="post" enctype="multipart/form-data">
+        <form action="edit.php?id=<?php echo $page_id; ?>" method="post">
             <div class="row">
                 <div class="col-md-8">
                     <!-- Main Content Fields -->
                     <div class="mb-3">
-                        <label for="content" class="form-label">Content *</label>
-                        <textarea class="form-control editor" id="content" name="content" rows="15" required><?php echo htmlspecialchars($page['content']); ?></textarea>
+                        <label for="title" class="form-label">Page Title *</label>
+                        <input type="text" class="form-control" id="title" name="title" value="<?php echo htmlspecialchars($page_data['title'] ?? ''); ?>" required>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="slug" class="form-label">Slug</label>
+                        <input type="text" class="form-control" id="slug" name="slug" value="<?php echo htmlspecialchars($page_data['slug'] ?? ''); ?>">
+                        <div class="form-text">Leave empty to generate from title. Current URL: <a href="/<?php echo htmlspecialchars($page_data['slug'] ?? ''); ?>" target="_blank">/<?php echo htmlspecialchars($page_data['slug'] ?? ''); ?></a></div>
+                    </div>
+                                        
+                    <div class="mb-3">
+                        <label for="content" class="form-label">Content</label>
+                        <textarea class="form-control editor" id="content" name="content" rows="12"><?php echo htmlspecialchars($page_data['content'] ?? ''); ?></textarea>
                     </div>
                 </div>
                 
@@ -237,42 +309,50 @@ include_once '../includes/header.php';
                             <div class="mb-3">
                                 <label for="status" class="form-label">Status</label>
                                 <select class="form-select" id="status" name="status">
-                                    <option value="published" <?php echo $page['status'] === 'published' ? 'selected' : ''; ?>>Published</option>
-                                    <option value="draft" <?php echo $page['status'] === 'draft' ? 'selected' : ''; ?>>Draft</option>
+                                    <option value="published" <?php echo ($page_data['status'] ?? '') === 'published' ? 'selected' : ''; ?>>Published</option>
+                                    <option value="draft" <?php echo ($page_data['status'] ?? '') === 'draft' ? 'selected' : ''; ?>>Draft</option>
                                 </select>
                             </div>
                             <div class="d-grid gap-2">
                                 <button type="submit" class="btn btn-primary">Update Page</button>
-                                <a href="/<?php echo htmlspecialchars($page['slug']); ?>" class="btn btn-outline-secondary" target="_blank">
+                                <a href="/<?php echo htmlspecialchars($page_data['slug'] ?? ''); ?>" target="_blank" class="btn btn-outline-secondary">
                                     <i class="fas fa-eye me-1"></i> View Page
                                 </a>
                             </div>
                         </div>
                     </div>
                     
-                    <div class="card mb-3">
-                        <div class="card-header">
-                            <h5 class="card-title mb-0">Featured Image</h5>
+                    <!-- Navigation Options -->
+                    <div class="mb-3">
+                        <?php
+                        // Check if page is in navigation
+                        $in_nav_query = "SELECT * FROM navigation WHERE page_id = :page_id LIMIT 1";
+                        $in_nav_stmt = $pdo->prepare($in_nav_query);
+                        $in_nav_stmt->bindParam(':page_id', $post_id);
+                        $in_nav_stmt->execute();
+                        $nav_item = $in_nav_stmt->fetch();
+                        $in_navigation = $nav_item ? true : false;
+                        $nav_location = $in_navigation ? $nav_item['location'] : 'header';
+                        ?>
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" id="add_to_navigation" name="add_to_navigation" value="1" <?php echo $in_navigation ? 'checked' : ''; ?>>
+                            <label class="form-check-label" for="add_to_navigation">
+                                <?php echo $in_navigation ? 'Keep in Navigation Menu' : 'Add to Navigation Menu'; ?>
+                            </label>
                         </div>
-                        <div class="card-body">
-                            <?php if (!empty($page['featured_image'])): ?>
-                                <div class="mb-3 text-center">
-                                    <img src="<?php echo htmlspecialchars($page['featured_image']); ?>" alt="Featured Image" id="featured-image-preview">
-                                </div>
-                                <div class="mb-3">
-                                    <div class="form-check">
-                                        <input class="form-check-input" type="checkbox" id="remove_image" name="remove_image">
-                                        <label class="form-check-label" for="remove_image">
-                                            Remove current image
-                                        </label>
-                                    </div>
-                                </div>
-                            <?php endif; ?>
-                            
-                            <div class="mb-3">
-                                <label for="featured_image" class="form-label">Upload New Image</label>
-                                <input class="form-control" type="file" id="featured_image" name="featured_image">
-                                <div class="form-text">Recommended size: 1200x630 pixels</div>
+                        
+                        <div class="mt-2 ps-4 nav-location-options">
+                            <div class="form-check">
+                                <input type="radio" class="form-check-input" id="nav_location_header" name="nav_location" value="header" <?php echo $nav_location === 'header' ? 'checked' : ''; ?>>
+                                <label class="form-check-label" for="nav_location_header">Header Only</label>
+                            </div>
+                            <div class="form-check">
+                                <input type="radio" class="form-check-input" id="nav_location_footer" name="nav_location" value="footer" <?php echo $nav_location === 'footer' ? 'checked' : ''; ?>>
+                                <label class="form-check-label" for="nav_location_footer">Footer Only</label>
+                            </div>
+                            <div class="form-check">
+                                <input type="radio" class="form-check-input" id="nav_location_both" name="nav_location" value="both" <?php echo $nav_location === 'both' ? 'checked' : ''; ?>>
+                                <label class="form-check-label" for="nav_location_both">Both Header & Footer</label>
                             </div>
                         </div>
                     </div>
@@ -284,41 +364,20 @@ include_once '../includes/header.php';
                         <div class="card-body">
                             <div class="mb-3">
                                 <label for="meta_description" class="form-label">Meta Description</label>
-                                <textarea class="form-control" id="meta_description" name="meta_description" rows="3"><?php echo htmlspecialchars($page['meta_description']); ?></textarea>
-                                <div class="form-text">If left empty, it will be generated from the content. Recommended length: 150-160 characters.</div>
+                                <textarea class="form-control" id="meta_description" name="meta_description" rows="3"><?php echo htmlspecialchars($page_data['meta_description'] ?? ''); ?></textarea>
+                                <div class="form-text">Recommended length: 150-160 characters.</div>
                             </div>
                         </div>
                     </div>
                     
                     <div class="card mb-3">
                         <div class="card-header">
-                            <h5 class="card-title mb-0">Page Options</h5>
+                            <h5 class="card-title mb-0">Page Information</h5>
                         </div>
                         <div class="card-body">
-                            <div class="form-check mb-3">
-                                <input class="form-check-input" type="checkbox" id="show_in_menu" name="show_in_menu" 
-                                       <?php echo (isset($page['show_in_menu']) && (int)$page['show_in_menu'] === 1) ? 'checked' : ''; ?>>
-                                <label class="form-check-label" for="show_in_menu">
-                                    Show in Navigation Menu
-                                </label>
-                                <div class="form-text">Display this page in the main navigation menu.</div>
-                            </div>
-                            
-                            <div class="form-check mb-3">
-                                <input class="form-check-input" type="checkbox" id="show_in_footer" name="show_in_footer"
-                                       <?php echo (isset($page['show_in_footer']) && (int)$page['show_in_footer'] === 1) ? 'checked' : ''; ?>>
-                                <label class="form-check-label" for="show_in_footer">
-                                    Show in Footer Menu
-                                </label>
-                                <div class="form-text">Display this page in the footer menu.</div>
-                            </div>
-                            
-                            <div class="text-muted small">
-                                <i class="fas fa-info-circle me-1"></i> Created: <?php echo isset($page['created_at']) ? date('F j, Y \a\t g:i A', strtotime($page['created_at'])) : 'Unknown'; ?>
-                                <?php if (isset($page['updated_at']) && $page['updated_at']): ?>
-                                <br>Last updated: <?php echo date('F j, Y \a\t g:i A', strtotime($page['updated_at'])); ?>
-                                <?php endif; ?>
-                            </div>
+                            <p><strong>Created:</strong> <?php echo date('F j, Y', strtotime($page_data['created_at'] ?? 'now')); ?></p>
+                            <p><strong>Last Updated:</strong> <?php echo date('F j, Y', strtotime($page_data['updated_at'] ?? 'now')); ?></p>
+                            <p><strong>Page ID:</strong> <?php echo $page_id; ?></p>
                         </div>
                     </div>
                 </div>
@@ -327,57 +386,10 @@ include_once '../includes/header.php';
     </div>
 </div>
 
-<?php 
-// Include admin footer
-include_once '../includes/footer.php'; 
-?>
-
 <script>
-// Image preview
-document.getElementById('featured_image').addEventListener('change', function(event) {
-    var preview = document.getElementById('featured-image-preview');
-    var file = event.target.files[0];
-    
-    if (file) {
-        var reader = new FileReader();
-        
-        reader.onload = function(e) {
-            if (preview) {
-                preview.src = e.target.result;
-            } else {
-                const newPreview = document.createElement('img');
-                newPreview.src = e.target.result;
-                newPreview.id = 'featured-image-preview';
-                newPreview.alt = 'Featured Image';
-                newPreview.classList.add('img-fluid');
-                document.querySelector('#featured_image').parentNode.prepend(newPreview);
-            }
-        };
-        
-        reader.readAsDataURL(file);
-    }
-});
-
-// Handle remove image checkbox
-const removeImageCheckbox = document.getElementById('remove_image');
-if (removeImageCheckbox) {
-    removeImageCheckbox.addEventListener('change', function() {
-        const preview = document.getElementById('featured-image-preview');
-        const fileInput = document.getElementById('featured_image');
-        
-        if (this.checked && preview) {
-            preview.style.opacity = '0.3';
-            fileInput.disabled = true;
-        } else {
-            if (preview) preview.style.opacity = '1';
-            fileInput.disabled = false;
-        }
-    });
-}
-
-// Slug generation from title
-document.getElementById('title').addEventListener('blur', function() {
-    const slugField = document.getElementById('slug');
+// Slug generator
+document.getElementById("title").addEventListener("blur", function() {
+    const slugField = document.getElementById("slug");
     if (slugField.value === "") {
         // Create a simple slug from the title
         slugField.value = this.value
@@ -389,14 +401,8 @@ document.getElementById('title').addEventListener('blur', function() {
     }
 });
 </script>
-                        <label for="title" class="form-label">Title *</label>
-                        <input type="text" class="form-control" id="title" name="title" value="<?php echo htmlspecialchars($page['title']); ?>" required>
-                    </div>
-                    
-                    <div class="mb-3">
-                        <label for="slug" class="form-label">Slug</label>
-                        <input type="text" class="form-control" id="slug" name="slug" value="<?php echo htmlspecialchars($page['slug']); ?>">
-                        <div class="form-text">Leave empty to generate from title. Current URL: <a href="/<?php echo htmlspecialchars($page['slug']); ?>" target="_blank">/<?php echo htmlspecialchars($page['slug']); ?></a></div>
-                    </div>
-                    
-                    <div class="mb-3">
+
+<?php
+// Include admin footer
+include_once '../includes/footer.php';
+?>

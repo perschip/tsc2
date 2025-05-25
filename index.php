@@ -44,33 +44,8 @@ include 'includes/header.php';
                     <h2 class="card-title mb-4">Current eBay Listings</h2>
                     <div id="ebay-listings">
                         <!-- Auction Nudge Embed -->
-                        <script type="text/javascript" src="https://www.auctionnudge.com/feed/item/js/theme/responsive/page/init/img_size/120/cats_output/dropdown/search_box/1/user_profile/1/blank/1/show_logo/1/lang/english/SellerID/<?php echo htmlspecialchars(getSetting('ebay_seller_id', 'tristate_cards')); ?>/siteid/0/MaxEntries/6/target/4c9be4bc1"></script>
-                        <div id="auction-nudge-4c9be4bc1"></div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Featured Cards Section -->
-            <h2 class="mt-5 mb-4">Featured Cards</h2>
-            <div class="row">
-                <div class="col-md-6 mb-4">
-                    <div class="card h-100">
-                        <img src="https://via.placeholder.com/600x400" class="card-img-top" alt="Featured Card">
-                        <div class="card-body">
-                            <h5 class="card-title">Premium Baseball Collection</h5>
-                            <p class="card-text">Explore our handpicked selection of rare baseball cards from legendary players and rising stars.</p>
-                            <a href="#" class="btn btn-primary">View Collection</a>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-6 mb-4">
-                    <div class="card h-100">
-                        <img src="https://via.placeholder.com/600x400" class="card-img-top" alt="Featured Card">
-                        <div class="card-body">
-                            <h5 class="card-title">Basketball Rookie Cards</h5>
-                            <p class="card-text">Find valuable rookie cards from the biggest names in basketball, perfect for collectors and investors.</p>
-                            <a href="#" class="btn btn-primary">View Collection</a>
-                        </div>
+                        <script type="text/javascript" src="https://www.auctionnudge.com/feed/item/js/theme/responsive/page/init/img_size/120/cats_output/dropdown/search_box/1/user_profile/1/blank/1/show_logo/1/lang/english/SellerID/<?php echo htmlspecialchars(getSetting('ebay_seller_id', 'tristate_cards')); ?>/siteid/0/MaxEntries/6/target/tristatecards123"></script>
+                        <div id="auction-nudge-tristatecards123"></div>
                     </div>
                 </div>
             </div>
@@ -162,14 +137,61 @@ include 'includes/header.php';
             <div class="card mt-4">
                 <div class="card-body">
                     <h4 class="card-title">Customer Testimonials</h4>
-                    <div class="testimonial">
-                        <p class="testimonial-text">"Tristate Cards always delivers quality cards and an amazing experience. Their card breaks are the best!"</p>
-                        <p class="testimonial-author">- Mike R.</p>
-                    </div>
-                    <hr>
-                    <div class="testimonial">
-                        <p class="testimonial-text">"Fast shipping, great communication, and amazing pulls. I'm a customer for life!"</p>
-                        <p class="testimonial-author">- Sarah T.</p>
+                    <?php
+                    // Get featured testimonials
+                    try {
+                        $testimonials_query = "SELECT * FROM testimonials WHERE status = 'published' AND is_featured = 1 ORDER BY created_at DESC LIMIT 2";
+                        $testimonials_stmt = $pdo->prepare($testimonials_query);
+                        $testimonials_stmt->execute();
+                        $featured_testimonials = $testimonials_stmt->fetchAll();
+                        
+                        if (!empty($featured_testimonials)) {
+                            foreach ($featured_testimonials as $index => $testimonial) {
+                                echo '<div class="testimonial">';
+                                echo '<p class="testimonial-text">"' . htmlspecialchars($testimonial['content']) . '"</p>';
+                                echo '<p class="testimonial-author">- ' . htmlspecialchars($testimonial['author_name']);
+                                if (!empty($testimonial['author_location'])) {
+                                    echo ', ' . htmlspecialchars($testimonial['author_location']);
+                                }
+                                echo '</p>';
+                                echo '</div>';
+                                
+                                // Add separator between testimonials except for the last one
+                                if ($index < count($featured_testimonials) - 1) {
+                                    echo '<hr>';
+                                }
+                            }
+                        } else {
+                            // Fallback to default testimonials if none are in the database
+                            ?>
+                            <div class="testimonial">
+                                <p class="testimonial-text">"Tristate Cards always delivers quality cards and an amazing experience. Their card breaks are the best!"</p>
+                                <p class="testimonial-author">- Mike R.</p>
+                            </div>
+                            <hr>
+                            <div class="testimonial">
+                                <p class="testimonial-text">"Fast shipping, great communication, and amazing pulls. I'm a customer for life!"</p>
+                                <p class="testimonial-author">- Sarah T.</p>
+                            </div>
+                            <?php
+                        }
+                    } catch (PDOException $e) {
+                        // If there's a database error, show the default testimonials
+                        ?>
+                        <div class="testimonial">
+                            <p class="testimonial-text">"Tristate Cards always delivers quality cards and an amazing experience. Their card breaks are the best!"</p>
+                            <p class="testimonial-author">- Mike R.</p>
+                        </div>
+                        <hr>
+                        <div class="testimonial">
+                            <p class="testimonial-text">"Fast shipping, great communication, and amazing pulls. I'm a customer for life!"</p>
+                            <p class="testimonial-author">- Sarah T.</p>
+                        </div>
+                        <?php
+                    }
+                    ?>
+                    <div class="text-center mt-3">
+                        <a href="testimonials.php" class="btn btn-sm btn-outline-primary">See All Testimonials</a>
                     </div>
                 </div>
             </div>
@@ -220,39 +242,52 @@ document.getElementById('newsletter-form').addEventListener('submit', function(e
     alert('Thanks for subscribing! We\'ll keep you updated with the latest news.');
     this.reset();
 });
+</script>
 
-// Additional check for eBay listings loading issues
+<script>
+// Additional eBay detection script
 document.addEventListener('DOMContentLoaded', function() {
-    // After 5 seconds, double-check if listings loaded properly
+    // Wait for the page to fully load
     setTimeout(function() {
-        const ebayContainer = document.getElementById('ebay-listings');
-        const auctionNudgeContainer = document.getElementById('auction-nudge-4c9be4bc1');
+        console.log("Running eBay check from index.php");
         
-        // Check if the Auction Nudge container exists and has content
-        if (!auctionNudgeContainer || 
-            auctionNudgeContainer.innerHTML.trim() === '' || 
-            auctionNudgeContainer.querySelectorAll('.an-item').length === 0) {
+        // Check if adblock-detector.js loaded properly
+        if (typeof window.checkEbayListings !== 'function') {
+            console.log("AdBlock detector script not loaded properly");
             
-            // Create error message if one doesn't already exist
-            if (!ebayContainer.querySelector('.alert-warning')) {
+            // Create a simple fallback detection
+            const ebayContainer = document.getElementById('ebay-listings');
+            const auctionNudgeContainer = document.getElementById('auction-nudge-tristatecards123');
+            
+            if (ebayContainer && (!auctionNudgeContainer || auctionNudgeContainer.innerHTML.trim() === '')) {
+                console.log("eBay container exists but is empty");
+                
+                // Create error message
                 const errorDiv = document.createElement('div');
                 errorDiv.className = 'alert alert-warning';
                 errorDiv.innerHTML = `
-                    <h5 class="mb-3"><i class="fas fa-exclamation-triangle me-2"></i> Unable to Load eBay Listings</h5>
-                    <p>We're having trouble displaying our eBay listings. This might be due to an ad blocker or other browser extension.</p>
-                    <p class="mb-0">To view our current listings, please visit our <a href="https://www.ebay.com/usr/${<?php echo htmlspecialchars(getSetting('ebay_seller_id', 'tristate_cards')); ?>}" target="_blank" class="alert-link">eBay store directly <i class="fas fa-external-link-alt fa-xs"></i></a>.</p>
+                    <h5 class="mb-3"><i class="fas fa-exclamation-triangle me-2"></i> eBay Listings Unavailable</h5>
+                    <p>We're having trouble displaying our eBay listings. This might be due to an ad blocker or network issue.</p>
+                    <p class="mb-0">To view our current listings, please visit our <a href="https://www.ebay.com/usr/${encodeURIComponent('<?php echo htmlspecialchars(getSetting('ebay_seller_id', 'tristate_cards')); ?>')}" target="_blank" class="alert-link">eBay store directly <i class="fas fa-external-link-alt fa-xs"></i></a>.</p>
                 `;
                 
-                // Add the error message to the container
+                // Add to container
                 ebayContainer.appendChild(errorDiv);
-                
-                // Hide the empty Auction Nudge container
-                if (auctionNudgeContainer) {
-                    auctionNudgeContainer.style.display = 'none';
-                }
             }
+        } else {
+            // Call the function directly if it exists
+            window.checkEbayListings();
         }
-    }, 5000); // Check after 5 seconds
+    }, 3000);
+});
+
+// Another check after complete page load
+window.addEventListener('load', function() {
+    setTimeout(function() {
+        if (typeof window.checkEbayListings === 'function') {
+            window.checkEbayListings();
+        }
+    }, 4000);
 });
 </script>
 

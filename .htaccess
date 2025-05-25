@@ -20,13 +20,23 @@ RewriteRule ^admin/pages/edit/([0-9]+)$ admin/pages/edit.php?id=$1 [L]
 RewriteRule ^admin/whatnot$ admin/whatnot/settings.php [L]
 RewriteRule ^admin/analytics$ admin/analytics/dashboard.php [L]
 RewriteRule ^admin/settings$ admin/settings/general.php [L]
-RewriteCond %{REQUEST_FILENAME} !-f
-RewriteCond %{REQUEST_FILENAME} !-d
-RewriteRule ^([a-zA-Z0-9-]+)/?$ page.php?slug=$1 [L,QSA]
+
+# Standard page rewrites - handle index to homepage
+RewriteRule ^index$ / [R=301,L]
+RewriteRule ^index.php$ / [R=301,L]
+
+# Clean URL rewrites for standard pages
+RewriteRule ^about$ about.php [L]
+RewriteRule ^contact$ contact.php [L]
+RewriteRule ^blog$ blog.php [L]
 
 # Blog post rewrites
-RewriteRule ^blog$ blog.php [L]
 RewriteRule ^blog/([a-zA-Z0-9-]+)$ blog-post.php?slug=$1 [L]
+
+# Custom page rewrites - make sure they don't match other rules or physical files
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^([a-zA-Z0-9-]+)$ page.php?slug=$1 [L]
 
 # Protect sensitive files
 <FilesMatch "^\.ht">
@@ -59,4 +69,11 @@ AddDefaultCharset UTF-8
     ExpiresByType application/x-shockwave-flash "access plus 1 month"
     ExpiresByType image/x-icon "access plus 1 year"
     ExpiresDefault "access plus 2 days"
+</IfModule>
+
+# Test if .htaccess is being read
+<IfModule mod_rewrite.c>
+    # This should redirect all requests to test-htaccess.php
+    # Comment out after testing
+    RewriteRule ^test-rewrite$ test-htaccess.php [L]
 </IfModule>
